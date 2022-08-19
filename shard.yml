@@ -1,0 +1,14 @@
+name: jalopy
+version: 0.1.0
+crystal: ">= 1.5.0"
+
+authors:
+  - kickscondor <kicks@kickscondor.com>
+
+dependencies:
+  base_x:
+    github: wout/base_x
+  protobuf:
+    github: jeromegn/protobuf.cr
+
+license: MIT
