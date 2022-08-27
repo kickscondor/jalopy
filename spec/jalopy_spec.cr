@@ -27,4 +27,16 @@ describe Jalopy do
       cid.should eq "QmX6aEL1LCCNAqFaDYxsaFMQEApan6Mpvy8n95pqZi9Upd"
     end
   end
+
+  describe Jalopy::CAR do
+    it "packages the spec directory" do
+      File.open("spec.car", "w") do |f|
+        car = Jalopy::CAR.new(f)
+        car.add("hello.txt", "Hello!")
+        car.add("hello2.txt", "Hello2")
+        car.add("static.gif", File.open("spec/static.gif"), 1209555)
+        car.flush
+      end
+    end
+  end
 end
