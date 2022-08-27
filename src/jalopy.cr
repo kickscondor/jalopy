@@ -1,9 +1,10 @@
-require "base_x"
 require "openssl"
 require "protobuf"
+require "base_x"
 
 module Jalopy
-  MAX_SIZE = 0x100000
+  MAX_SIZE_V0 = 0x40000
+  MAX_SIZE_V1 = 0x100000
 
   enum FileType
     Raw
@@ -47,13 +48,14 @@ module Jalopy
 
   class CAR
     VERSION = 1
+    @root : Bytes?
 
     def initialize(@io : IO = IO::Memory.new)
       @nodes = [] of {String?, Bytes, IO, UInt64}
     end
 
     def add(name : String, io : String | IO, len = io.size)
-      cid, buf = Jalopy.node(io, len,
+      cid, buf = Jalopy.node(io, len, 1,
         ->(id : Bytes, buf : IO::Memory) { @nodes.push({nil, id, buf, UInt64.new(buf.size)}) })
       @nodes.push({name, cid, buf, UInt64.new(len)})
     end
@@ -92,38 +94,50 @@ module Jalopy
       IO.copy(io, @io)
     end
 
-    def flush
-      links = [] of NodeLink
-      @nodes.each do |(name, id, buf, len)|
-        links.push(NodeLink.new(hash: id, name: name, tsize: len)) if name
-      end
-      node = Node.new(file: InlineFile.new(type: FileType::Directory),
-        links: links)
-      io = node.to_protobuf
-      io.rewind
-      root, buf = Jalopy.hash(0x70, io)
-      @nodes.push({nil, root, buf, UInt64.new(buf.size)})
+    def root
+      unless @root
+        links = [] of NodeLink
+        @nodes.each do |(name, id, buf, len)|
+          links.push(NodeLink.new(hash: id, name: name, tsize: len)) if name
+        end
+        node = Node.new(file: InlineFile.new(type: FileType::Directory),
+          links: links)
+        io = node.to_protobuf
+        io.rewind
 
-      write_header(root)
+        @root, buf = Jalopy.hash(0x70, io)
+        @nodes.push({nil, @root.as(Bytes), buf, UInt64.new(buf.size)})
+      end
+      @root
+    end
+
+    def flush
+      write_header(root.as(Bytes))
       @nodes.each do |(name, id, buf, len)|
         write_data(id, 0x70, buf)
       end
     end
   end
 
-  def self.hash(codec : Int32, buf : IO::Memory)
+  def self.hash(codec : Int32, buf : IO::Memory, version = 1)
+    extra = (version == 0 ? 2 : 4)
     hsh = OpenSSL::Digest.new("SHA256").update(buf).final
-    multi = Bytes.new(hsh.size + 4)
-    multi[0] = 0x1
-    multi[1] = codec.to_u8
-    multi[2] = 0x12
-    multi[3] = 0x20
-    hsh.each_with_index { |x, i| multi[i + 4] = x }
+    multi = Bytes.new(hsh.size + extra)
+    if version == 0
+      multi[0] = 0x12
+      multi[1] = 0x20
+    else
+      multi[0] = 0x1
+      multi[1] = codec.to_u8
+      multi[2] = 0x12
+      multi[3] = 0x20
+    end
+    hsh.each_with_index { |x, i| multi[i + extra] = x }
     {multi, buf}
   end
 
   # Builds a CID and UNIXFS node for some content.
-  def self.node(io : String | IO, len : Number = io.size, block : (Bytes, IO ->)? = nil)
+  def self.node(io : String | IO, len : Number = io.size, version = 1, block : (Bytes, IO ->)? = nil)
     io =
       case io
       when String
@@ -132,45 +146,87 @@ module Jalopy
         io
       end
 
+    max_size = (version == 0 ? MAX_SIZE_V0 : MAX_SIZE_V1)
     codec, proto =
-      if len <= MAX_SIZE
-        buf = IO::Memory.new
-        IO.copy(io, buf, len)
-        {0x55, buf}
+      if len <= max_size
+        if version == 0
+          slice = Bytes.new(len)
+          io.read(slice)
+          n = Node.new(file: InlineFile.new(type: FileType::File, data: slice, size: UInt64.new(len)))
+          {0x70, n.to_protobuf}
+        else
+          buf = IO::Memory.new
+          IO.copy(io, buf, len)
+          {0x55, buf}
+        end
       else
         links = [] of NodeLink
         blocks = [] of UInt64
         rem = len
         while rem > 0
-          chunk = Math.min(rem, MAX_SIZE)
-          linkid, linkbuf = node(io, chunk)
+          chunk = Math.min(rem, max_size)
+          linkid, linkbuf = node(io, chunk, version)
           links << NodeLink.new(hash: linkid, name: "", tsize: UInt64.new(linkbuf.size))
           block.call(linkid, linkbuf) if block
           blocks << UInt64.new(chunk)
           rem -= chunk
         end
         n = Node.new(links: links, file: InlineFile.new(type: FileType::File, size: UInt64.new(len), blocks: blocks))
-
-        buf = n.to_protobuf
-        {0x70, buf}
+        {0x70, n.to_protobuf}
       end
 
     proto.rewind
-    hash(codec, proto)
+    hash(codec, proto, version)
   end
 
   # Computes the raw CID and file size for an IPFS chunk.
   #
   # Returns {cid, size} 
-  def self.link(io : String | IO, len = io.size)
-    multi, buf = node(io, len)
+  def self.link(io : String | IO, len = io.size, version = 1)
+    multi, buf = node(io, len, version)
     {multi, buf.size}
   end
 
+  BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
+  BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
   # Computes the CID string (Base85-encoded multihash, suitable for IPFS) for a
   # file. Files larger than MAX_SIZE will be split into chunks.
-  def self.cid(io, len = io.size)
-    str, _ = link(io, len)
-    BaseX::Base58.encode(str)
+  def self.cid(io, len = io.size, version = 1)
+    str, _ = node(io, len, version)
+    if version == 0
+      self.encode(str, BASE58)
+    else
+      "b" + self.base32(str)
+    end
+  end
+
+  def self.base32(ary)
+    String.build do |str|
+      i = 0
+      until i > ary.size
+        n = ((ary[i]? || 0).to_u64! << 32) | ((ary[i + 1]? || 0).to_u64! << 24) | ((ary[i + 2]? || 0).to_u64! << 16) |
+         ((ary[i + 3]? || 0).to_u64! << 8) | (ary[i + 4]? || 0).to_u64!
+        e = (40 - (Math.min(ary.size - i, 5) * 8)) - 4
+        j = 35
+        while j >= e
+          str << BASE32[(n >> j) & 0x1f]
+          j -= 5 
+        end
+        i += 5
+      end
+    end
+  end
+
+  def self.encode(ary, alpha, base = alpha.size)
+    int = ary.empty? ? 0 : ary.hexstring.to_big_i(16)
+    String.build do |str|
+      while int >= base
+        mod = int % base
+        str << alpha[mod, 1]
+        int = (int - mod).divmod(base).first
+      end
+      str << alpha[int, 1]
+    end.reverse
   end
 end
