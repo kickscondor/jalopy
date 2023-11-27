@@ -1,6 +1,7 @@
+require "base_x"
+require "cbor"
 require "openssl"
 require "protobuf"
-require "base_x"
 
 module Jalopy
   MAX_SIZE_V0 = 0x40000
@@ -46,6 +47,74 @@ module Jalopy
     end
   end
 
+  #
+  # Protobuf from IPNS spec, for creating a V1+V2 entry
+  #
+
+  module IPNS
+    enum KeyType
+      RSA
+      Ed25519
+      Secp256k1
+      ECDSA
+    end
+
+    struct PublicKey
+      include Protobuf::Message
+      contract do
+        required :type, KeyType, 1, default: KeyType::RSA
+        required :data, :bytes, 2
+      end
+    end
+
+    enum ValidityType
+      EOL
+    end
+
+    class Repr
+      include CBOR::Serializable
+      @[CBOR::Field(key: "TTL")]
+      property ttl : UInt64
+      @[CBOR::Field(key: "Value")]
+      property value : Bytes
+      @[CBOR::Field(key: "Sequence")]
+      property sequence : UInt64
+      @[CBOR::Field(key: "Validity")]
+      property validity : Time
+      @[CBOR::Field(key: "ValidityType")]
+      property validity_type : UInt64
+
+      def initialize(@ttl, @value, @sequence, @validity, @validity_type)
+      end
+    end
+
+    struct Entry
+      include Protobuf::Message
+      contract do
+        optional :value, :bytes, 1
+        optional :signatureV1, :bytes, 2
+        optional :validityType, ValidityType, 3
+        optional :validity, :bytes, 4
+        optional :sequence, :uint64, 5
+        optional :ttl, :uint64, 6
+        optional :pubKey, :bytes, 7
+        optional :signatureV2, :bytes, 8
+        optional :data, :bytes, 9
+      end
+
+      def self.build(addr : String, sig : Bytes, seq : UInt64 = 0)
+        addb = "/ipfs/#{addr}".to_slice
+        timb = Time.utc + 100.years 
+        repr = Jalopy::IPNS::Repr.new(UInt64.new(1800000000000), addb, seq, timb, 0)
+        ipns = Jalopy::IPNS::Entry.new(signatureV2: sig, data: repr.to_cbor)
+         
+        io = ipns.to_protobuf
+        io.rewind
+        io
+      end
+    end
+  end
+
   class CAR
     VERSION = 1
     @root : Bytes?
@@ -60,21 +129,9 @@ module Jalopy
       @nodes.push({name, cid, buf, UInt64.new(len)})
     end
 
-    def write_leb128(io : IO, n : UInt32)
-      loop do
-        bits = n & 0x7F
-        n >>= 7
-        if n == 0
-          io.write_byte(bits.to_u8!)
-          break
-        end
-        io.write_byte (bits | 0x80).to_u8!
-      end
-    end
-
     def write_header(cid : Bytes)
       # Fixed header length
-      write_leb128(@io, 0x3a)
+      Jalopy.write_leb128(@io, 0x3a)
       # CBOR map "roots" array
       @io.write(Bytes[0xa2, 0x65, 0x72, 0x6f, 0x6f, 0x74, 0x73, 0x81, 0xd8, 0x2a, 0x58, 0x25, 0x00])
       # Tagged CID
@@ -90,7 +147,7 @@ module Jalopy
       IO.copy(data, io)
       io.rewind
 
-      write_leb128(@io, UInt32.new(io.size))
+      Jalopy.write_leb128(@io, UInt32.new(io.size))
       IO.copy(io, @io)
     end
 
@@ -116,6 +173,18 @@ module Jalopy
       @nodes.each do |(name, id, buf, len)|
         write_data(id, 0x70, buf)
       end
+    end
+  end
+
+  def self.write_leb128(io : IO, n : UInt32)
+    loop do
+      bits = n & 0x7F
+      n >>= 7
+      if n == 0
+        io.write_byte(bits.to_u8!)
+        break
+      end
+      io.write_byte (bits | 0x80).to_u8!
     end
   end
 

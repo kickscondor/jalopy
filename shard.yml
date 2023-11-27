@@ -6,6 +6,8 @@ authors:
   - kickscondor <kicks@kickscondor.com>
 
 dependencies:
+  cbor:
+    git: https://git.sr.ht/~arestifo/crystal-cbor
   base_x:
     github: wout/base_x
   protobuf:
