@@ -164,7 +164,7 @@ module Jalopy
         io.rewind
 
         @root, buf = Jalopy.hash(0x70, io)
-        @nodes.push({nil, @root.as(Bytes), buf, UInt64.new(buf.size)})
+        @nodes.unshift({nil, @root.as(Bytes), buf, UInt64.new(buf.size)})
       end
       @root
     end
