@@ -130,10 +130,11 @@ module Jalopy
     end
 
     def write_header(cid : Bytes)
+      cidlen = UInt32.new(cid.size + 1)
       # Fixed header length
-      Jalopy.write_leb128(@io, 0x3a)
+      Jalopy.write_leb128(@io, cidlen + 21)
       # CBOR map "roots" array
-      @io.write(Bytes[0xa2, 0x65, 0x72, 0x6f, 0x6f, 0x74, 0x73, 0x81, 0xd8, 0x2a, 0x58, 0x25, 0x00])
+      @io.write(Bytes[0xa2, 0x65, 0x72, 0x6f, 0x6f, 0x74, 0x73, 0x81, 0xd8, 0x2a, 0x58, cidlen, 0x00])
       # Tagged CID
       @io.write(cid)
       # CBOR map "version" key
