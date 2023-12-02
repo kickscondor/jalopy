@@ -127,6 +127,7 @@ module Jalopy
       cid, buf = Jalopy.node(io, len, 1,
         ->(id : Bytes, buf : IO::Memory) { @nodes.push({nil, id, buf, UInt64.new(buf.size)}) })
       @nodes.push({name, cid, buf, UInt64.new(len)})
+      cid
     end
 
     def write_header(cid : Bytes)
