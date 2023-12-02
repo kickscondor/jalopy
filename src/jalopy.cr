@@ -266,10 +266,18 @@ module Jalopy
   def self.cid(io, len = io.size, version = 1)
     str, _ = node(io, len, version)
     if version == 0
-      self.encode(str, BASE58)
+      self.cidv0(str)
     else
-      "b" + self.base32(str)
+      self.cidv1(str)
     end
+  end
+
+  def self.cidv0(ary)
+    self.encode(ary, BASE58)
+  end
+
+  def self.cidv1(ary)
+    "b" + self.base32(ary)
   end
 
   def self.base32(ary)
