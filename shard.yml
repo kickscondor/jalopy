@@ -12,5 +12,8 @@ dependencies:
     github: wout/base_x
   protobuf:
     github: jeromegn/protobuf.cr
+  sodium:
+    github: didactic-drunk/sodium.cr
+    commit: 2e1856fedb58c80b6be21c0045481ff4e93ab7f3
 
 license: MIT

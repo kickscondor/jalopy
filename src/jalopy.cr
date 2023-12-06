@@ -2,6 +2,7 @@ require "base_x"
 require "cbor"
 require "openssl"
 require "protobuf"
+require "sodium"
 
 module Jalopy
   MAX_SIZE_V0 = 0x40000
@@ -80,7 +81,7 @@ module Jalopy
       @[CBOR::Field(key: "Sequence")]
       property sequence : UInt64
       @[CBOR::Field(key: "Validity")]
-      property validity : Time
+      property validity : Bytes
       @[CBOR::Field(key: "ValidityType")]
       property validity_type : UInt64
 
@@ -102,16 +103,26 @@ module Jalopy
         optional :data, :bytes, 9
       end
 
-      def self.build(addr : String, sig : Bytes, seq : UInt64 = 0)
+      def self.build(key : Sodium::Sign::SecretKey, addr : String, seq : UInt64 = 0)
         addb = "/ipfs/#{addr}".to_slice
-        timb = Time.utc + 100.years 
-        repr = Jalopy::IPNS::Repr.new(UInt64.new(1800000000000), addb, seq, timb, 0)
-        ipns = Jalopy::IPNS::Entry.new(signatureV2: sig, data: repr.to_cbor)
-         
-        io = ipns.to_protobuf
-        io.rewind
-        io
+        tims = (Time.utc + 100.years).to_rfc3339
+        pay1 = "#{addb}#{tims}EOL"
+        sig1 = key.sign_detached(pay1)
+        ttll = UInt64.new(1800000000000)
+        repr = Repr.new(ttll, addb, seq, tims.to_slice, 0)
+
+        pay2 = "ipns-signature:".to_slice + repr.to_cbor
+        sig2 = key.sign_detached(pay2)
+        Entry.new(value: addb.to_slice, signatureV1: sig1,
+          validityType: ValidityType::EOL, validity: tims.to_slice,
+          sequence: seq, ttl: ttll, signatureV2: sig2, data: repr.to_cbor)
       end
+    end
+
+    def self.cid(key : Sodium::Sign::PublicKey)
+      ary = Bytes[1, 114, 0, 36, 8, 1, 18, 32] +
+        key.to_slice
+      Jalopy.cidns(ary)
     end
   end
 
@@ -259,6 +270,7 @@ module Jalopy
   end
 
   BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
+  BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
   BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
   # Computes the CID string (Base85-encoded multihash, suitable for IPFS) for a
@@ -278,6 +290,10 @@ module Jalopy
 
   def self.cidv1(ary)
     "b" + self.base32(ary)
+  end
+
+  def self.cidns(ary)
+    "k" + self.encode(ary, BASE36)
   end
 
   def self.base32(ary)
